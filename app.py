@@ -292,7 +292,7 @@ def run_clustering(_df, _bad_terms_list):
     scores = {}
     if k_range:
         for k in k_range:
-            km = MiniBatchKMeans(n_clusters=k, random_state=42, n_init='auto')
+            km = MiniBatchKMeans(n_clusters=k, random_state=42) # CHANGE: Removed n_init='auto'
             labels = km.fit_predict(X)
             if len(np.unique(labels)) > 1:
                 # Use a smaller sample_size for silhouette to speed it up
@@ -303,7 +303,7 @@ def run_clustering(_df, _bad_terms_list):
     optimal_k = max(scores, key=scores.get) if scores else 5
     
     st.info(f"Performing final clustering with k={optimal_k}...")
-    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42) # CHANGE: Removed n_init='auto'
     df_filtered['cluster'] = km.fit_predict(X)
     
     st.info("Extracting keywords and generating summaries...")
@@ -529,7 +529,7 @@ if 'analysis_done' in st.session_state:
                             st.markdown(f"##### Trend for `{term}`")
                             st.line_chart(df_plot, color=["#FF4B4B", "#2ECC71"])
                         else:
-                            st.warning(f"No reviews found containing the term '{term}'..")
+                            st.warning(f"No reviews found containing the term '{term}'.")
                 else:
                     st.warning("Please enter at least one term for OR logic.")
 
@@ -564,5 +564,4 @@ if 'analysis_done' in st.session_state:
 
 else:
     st.info("⬅️ Enter a Google Play App ID in the sidebar to begin analysis.")
-
 
