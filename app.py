@@ -303,7 +303,7 @@ def run_clustering(_df, _bad_terms_list):
     optimal_k = max(scores, key=scores.get) if scores else 5
     
     st.info(f"Performing final clustering with k={optimal_k}...")
-    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42, n_init='auto')
+    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42, n_init=10)
     df_filtered['cluster'] = km.fit_predict(X)
     
     st.info("Extracting keywords and generating summaries...")
@@ -564,4 +564,5 @@ if 'analysis_done' in st.session_state:
 
 else:
     st.info("⬅️ Enter a Google Play App ID in the sidebar to begin analysis.")
+
 
