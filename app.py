@@ -41,19 +41,33 @@ def load_nlp_models():
     except LookupError:
         nltk.download('punkt')
     
+    # Load spaCy model - it should be installed via requirements.txt
     try:
-        # Load spaCy model with only the components we need (tagger, lemmatizer) for speed
         nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-    except OSError:
-        st.info("Downloading spaCy model... this may take a minute.")
-        spacy.cli.download("en_core_web_sm")
-        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        st.success("✅ spaCy model loaded successfully!")
+    except OSError as e:
+        st.error(f"❌ spaCy model 'en_core_web_sm' not found: {e}")
+        st.error("The model should have been installed via requirements.txt")
+        # Fallback to basic text processing
+        st.warning("🔄 Falling back to basic text processing without spaCy...")
+        return None, set(stopwords.words("english"))
+    except Exception as e:
+        st.error(f"❌ Error loading spaCy model: {e}")
+        return None, set(stopwords.words("english"))
+    
     return nlp, set(stopwords.words("english"))
 
-NLP, NLTK_STOPWORDS = load_nlp_models()
-SPACY_STOPWORDS = NLP.Defaults.stop_words
-COMBINED_STOPWORDS = NLTK_STOPWORDS.union(SPACY_STOPWORDS)
-
+# Load models
+model_result = load_nlp_models()
+if model_result[0] is not None:
+    NLP, NLTK_STOPWORDS = model_result
+    SPACY_STOPWORDS = NLP.Defaults.stop_words
+    COMBINED_STOPWORDS = NLTK_STOPWORDS.union(SPACY_STOPWORDS)
+else:
+    # Fallback when spaCy is not available
+    NLP = None
+    NLTK_STOPWORDS = model_result[1]
+    COMBINED_STOPWORDS = NLTK_STOPWORDS
 
 # --- Helper & Core Functions from your Notebook ---
 
@@ -124,6 +138,21 @@ def basic_clean(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def fallback_text_processing(texts):
+    """Fallback text processing when spaCy is not available."""
+    processed_texts = []
+    for text in texts:
+        # Basic cleaning and tokenization
+        text = basic_clean(text)
+        words = text.split()
+        # Filter words: length >= 3, not in stopwords
+        filtered_words = [
+            word for word in words 
+            if len(word) >= 3 and word.lower() not in COMBINED_STOPWORDS
+        ]
+        processed_texts.append(" ".join(filtered_words))
+    return processed_texts
+
 # Removed @st.cache_data to ensure this re-runs for each new analysis
 def run_preprocessing(_df):
     df = _df.copy()
@@ -141,27 +170,34 @@ def run_preprocessing(_df):
         df_clean.rename(columns={'version_filled':'appVersion'}, inplace=True)
         df_clean.dropna(subset=['content'], inplace=True)
         
-        status.update(label="Applying spaCy lemmatization (optimized)...")
-        
         texts = df_clean['content'].tolist()
-        processed_texts = []
         total_rows = len(texts)
-        progress_bar = st.progress(0, text=f"Lemmatizing {total_rows} reviews...")
+        progress_bar = st.progress(0, text=f"Processing {total_rows} reviews...")
+        
+        if NLP is not None:
+            # Use spaCy processing
+            status.update(label="Applying spaCy lemmatization (optimized)...")
+            processed_texts = []
+            
+            # Use nlp.pipe for efficient batch processing
+            docs = NLP.pipe(texts, batch_size=50)
 
-        # Use nlp.pipe for efficient batch processing
-        docs = NLP.pipe(texts, batch_size=50)
-
-        for i, doc in enumerate(docs):
-            # Process and append the lemmatized text
-            processed_texts.append(" ".join([
-                token.lemma_.lower() for token in doc if
-                token.is_alpha
-                and len(token.lemma_) >= 3
-                and token.lemma_.lower() not in COMBINED_STOPWORDS
-            ]))
-            # Update progress bar periodically to avoid slowing down the UI
-            if (i + 1) % 100 == 0:
-                progress_bar.progress((i + 1) / total_rows, text=f"Lemmatizing reviews... ({i+1}/{total_rows})")
+            for i, doc in enumerate(docs):
+                # Process and append the lemmatized text
+                processed_texts.append(" ".join([
+                    token.lemma_.lower() for token in doc if
+                    token.is_alpha
+                    and len(token.lemma_) >= 3
+                    and token.lemma_.lower() not in COMBINED_STOPWORDS
+                ]))
+                # Update progress bar periodically to avoid slowing down the UI
+                if (i + 1) % 100 == 0:
+                    progress_bar.progress((i + 1) / total_rows, text=f"Lemmatizing reviews... ({i+1}/{total_rows})")
+        else:
+            # Use fallback processing
+            status.update(label="Applying fallback text processing...")
+            processed_texts = fallback_text_processing(texts)
+            progress_bar.progress(1.0, text="Text processing complete!")
         
         df_clean['preproc_text'] = processed_texts
         progress_bar.empty()
@@ -292,7 +328,7 @@ def run_clustering(_df, _bad_terms_list):
     scores = {}
     if k_range:
         for k in k_range:
-            km = MiniBatchKMeans(n_clusters=k, random_state=42) # CHANGE: Removed n_init='auto'
+            km = MiniBatchKMeans(n_clusters=k, random_state=42)
             labels = km.fit_predict(X)
             if len(np.unique(labels)) > 1:
                 # Use a smaller sample_size for silhouette to speed it up
@@ -303,7 +339,7 @@ def run_clustering(_df, _bad_terms_list):
     optimal_k = max(scores, key=scores.get) if scores else 5
     
     st.info(f"Performing final clustering with k={optimal_k}...")
-    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42) # CHANGE: Removed n_init='auto'
+    km = MiniBatchKMeans(n_clusters=optimal_k, random_state=42)
     df_filtered['cluster'] = km.fit_predict(X)
     
     st.info("Extracting keywords and generating summaries...")
@@ -351,6 +387,10 @@ def reset_analysis_state():
 # --- Streamlit UI ---
 st.title("🔬 Advanced Google Play NLP Analyzer")
 st.markdown("From scraping to clustering, turn Google Play reviews into actionable insights. Based on the workflow from `nlp.py`.")
+
+# Display spaCy status
+if NLP is None:
+    st.warning("⚠️ spaCy model not available - using fallback text processing. Some features may be limited.")
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
@@ -405,7 +445,11 @@ if 'analysis_done' in st.session_state:
 
     with tab2:
         st.subheader("NLP Preprocessing Pipeline")
-        st.info("This step involves cleaning text, normalizing app versions, and applying spaCy for lemmatization and stopword removal.")
+        if NLP is not None:
+            st.info("This step involves cleaning text, normalizing app versions, and applying spaCy for lemmatization and stopword removal.")
+        else:
+            st.info("This step involves cleaning text, normalizing app versions, and applying basic text processing (spaCy not available).")
+        
         if 'df_clean' not in st.session_state:
             st.session_state.df_clean = run_preprocessing(st.session_state.raw_df)
         st.dataframe(st.session_state.df_clean, use_container_width=True)
@@ -419,12 +463,12 @@ if 'analysis_done' in st.session_state:
             This analysis helps find the most impactful words by calculating a **"delta"** score for each term. This score measures how strongly a word is associated with a positive or negative experience.
 
             - **For 😠 Problematic Terms:** We focus on extreme dissatisfaction.
-                - `delta = (Count in 1★ reviews) - (Count in 5★ reviews)`
+                - `delta = (Count in 1⭐ reviews) - (Count in 5⭐ reviews)`
                 - A large positive delta means the term is a strong indicator of a critical issue that leads to 1-star reviews.
 
             - **For 😊 Positive Terms:** We look for general satisfaction.
-                - `high = Count in 4★ + 5★ reviews`
-                - `low = Count in 1★ + 2★ reviews`
+                - `high = Count in 4⭐ + 5⭐ reviews`
+                - `low = Count in 1⭐ + 2⭐ reviews`
                 - `delta = high - low`
                 - A large positive delta means the term is a strong indicator of what users love about the app.
             """)
@@ -433,15 +477,15 @@ if 'analysis_done' in st.session_state:
             if 'bad_terms' not in st.session_state:
                 st.session_state.bad_terms, st.session_state.good_terms = analyze_term_frequency(st.session_state.df_clean)
             
-            st.markdown("#### 😠 Problematic Terms (More Frequent in 1★ than 5★ Reviews)")
+            st.markdown("#### 😠 Problematic Terms (More Frequent in 1⭐ than 5⭐ Reviews)")
             fig, ax = plt.subplots(figsize=(12, 6))
             st.session_state.bad_terms.head(20).plot(kind='bar', y='delta', ax=ax, legend=False, color='salmon')
             ax.set_title("Top 20 Problematic Terms")
-            ax.set_ylabel("Difference in Count (1★ minus 5★)")
+            ax.set_ylabel("Difference in Count (1⭐ minus 5⭐)")
             st.pyplot(fig)
             st.dataframe(st.session_state.bad_terms.head(20), use_container_width=True)
 
-            st.markdown("#### 😊 Positive Terms (More Frequent in 4★+5★ than 1★+2★ Reviews)")
+            st.markdown("#### 😊 Positive Terms (More Frequent in 4⭐+5⭐ than 1⭐+2⭐ Reviews)")
             fig, ax = plt.subplots(figsize=(12, 6))
             st.session_state.good_terms.head(20).plot(kind='bar', y='delta', ax=ax, legend=False, color='skyblue')
             ax.set_title("Top 20 Positive Terms")
@@ -529,7 +573,7 @@ if 'analysis_done' in st.session_state:
                             st.markdown(f"##### Trend for `{term}`")
                             st.line_chart(df_plot, color=["#FF4B4B", "#2ECC71"])
                         else:
-                            st.warning(f"No reviews found containing the term '{term}'.")
+                            st.warning(f"No reviews found containing the term '{term}'..")
                 else:
                     st.warning("Please enter at least one term for OR logic.")
 
@@ -539,29 +583,4 @@ if 'analysis_done' in st.session_state:
             user_terms_and = st.text_input("Enter terms (e.g., login and slow)", "payment and failed", key="and_terms")
 
             if st.button("Plot AND Trends"):
-                terms_list = [t.strip().lower() for t in user_terms_and.split('and') if t.strip()]
-                if len(terms_list) > 1:
-                    mask = pd.Series(True, index=df_clean.index)
-                    for term in terms_list:
-                        mask &= df_clean['preproc_text'].str.contains(rf'\b{re.escape(term)}\b', regex=True, na=False)
-                    
-                    df_filtered = df_clean[mask]
-                    combined_term = ' & '.join(terms_list)
-                    
-                    counts_1star = df_filtered[df_filtered['score'] == 1].groupby('appVersion').size()
-                    counts_5star = df_filtered[df_filtered['score'] == 5].groupby('appVersion').size()
-
-                    df_plot = pd.DataFrame({'1-star': counts_1star, '5-star': counts_5star}).fillna(0)
-
-                    if not df_plot.empty:
-                        st.markdown(f"##### Trend for `{combined_term}`")
-                        st.line_chart(df_plot, color=["#FF4B4B", "#2ECC71"])
-                    else:
-                        st.warning(f"No reviews found containing all terms: '{combined_term}'.")
-                else:
-                    st.warning("Please enter at least two terms separated by 'and'.")
-
-
-else:
-    st.info("⬅️ Enter a Google Play App ID in the sidebar to begin analysis.")
-
+                terms_list
