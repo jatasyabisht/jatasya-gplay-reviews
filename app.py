@@ -299,7 +299,9 @@ def top_keywords_per_cluster(X, labels, vectorizer, top_n=8):
     terms = vectorizer.get_feature_names_out()
     keywords = {}
     for i in np.unique(labels):
-        mask = labels == i
+        # Convert labels to numpy array to avoid pandas compatibility issues
+        labels_array = np.array(labels)
+        mask = labels_array == i
         cluster_tfidf = X[mask].sum(axis=0)
         top_indices = np.asarray(cluster_tfidf).flatten().argsort()[-top_n:]
         keywords[i] = [terms[j] for j in top_indices][::-1]
